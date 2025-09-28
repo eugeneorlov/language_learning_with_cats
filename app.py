@@ -1,83 +1,101 @@
 import streamlit as st
-from openai import OpenAI
+from streamlit_webrtc import webrtc_streamer, WebRtcMode
+import openai
+import pandas as pd
+from pathlib import Path
+import io
 
-# Initialize OpenAI client
-client = OpenAI()
+openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 # Set page config
-st.set_page_config(page_title="Language Bot", page_icon="🐱", layout="centered")
+st.set_page_config(page_title="Language Bot",
+                   page_icon="🐱🎤", layout="centered")
 
 # Header with image
 st.image("resources/language_learning_with_cats.png", use_container_width=True)
-st.title("🐱 Language Bot")
-st.subheader("Your AI-powered assistant for learning languages")
+st.title("🐱🎤 AI Language Learning Assistant")
 
-# Language picker
-language = st.radio("Pick language", ["German", "French", "Spanish"])
+# --- 1. Language Selection ---
+language = st.selectbox("Choose your practice language:", [
+                        "German", "French", "Spanish"])
 
-# Subtitle
-st.subheader("What do you want to learn?")
+# --- 2. Feedback Mode Toggle ---
+feedback_mode = st.checkbox(
+    "Enable feedback (grammar + vocabulary explanations)", value=True)
 
-# Define prompts
-prompts = {
-    "Vocabulary": f"Create a vocabulary quiz in {language} focusing on job interview topics. The quiz should be Fill-in-the-Blanks type and include 10 questions. Provide an answer key.",
-    "Grammar": f"Explain the {language} basic grammar concepts.",
-    "Conversational practice": f"Let’s role-play in {language}. Please start the conversation."
-}
+# --- Conversation Log (kept in session state) ---
+if "log" not in st.session_state:
+    st.session_state.log = []
 
-# Initialize session state for chat history
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# --- WebRTC audio input ---
+ctx = webrtc_streamer(
+    key="speech-demo",
+    mode=WebRtcMode.SENDONLY,
+    audio_receiver_size=256,
+    media_stream_constraints={"audio": True, "video": False},
+    async_processing=True,
+)
 
-# Reset and set new context based on button click
-col1, col2, col3 = st.columns(3)
-selected_task = None
-with col1:
-    if st.button("Vocabulary"):
-        st.session_state.messages = [
-            {"role": "system", "content": prompts["Vocabulary"]},
-            {"role": "assistant", "content": "📘 Context set: Vocabulary practice."}
-        ]
-        selected_task = "Vocabulary"
-with col2:
-    if st.button("Grammar"):
-        st.session_state.messages = [
-            {"role": "system", "content": prompts["Grammar"]},
-            {"role": "assistant", "content": "✍️ Context set: Grammar practice."}
-        ]
-        selected_task = "Grammar"
-with col3:
-    if st.button("Conversational practice"):
-        st.session_state.messages = [
-            {"role": "system", "content": prompts["Conversational practice"]},
-            {"role": "assistant", "content": "💬 Context set: Conversational practice."}
-        ]
-        selected_task = "Conversational practice"
+if ctx.audio_receiver:
+    if st.button("🎙️ Transcribe & Chat"):
+        # Save recorded audio to file
+        wav_path = Path("input.wav")
+        with open(wav_path, "wb") as f:
+            for frame in ctx.audio_receiver.get_frames(timeout=1):
+                f.write(frame.to_ndarray().tobytes())
 
-st.divider()
+        # --- Step 1: Transcribe Speech ---
+        with open(wav_path, "rb") as f:
+            transcription = openai.audio.transcriptions.create(
+                model="gpt-4o-mini-transcribe",
+                file=f
+            )
+        user_text = transcription.text
+        st.write(f"**You said:** {user_text}")
 
-# Chat UI
-st.subheader("💬 Chat with Language Bot")
+        # --- Step 2: Send to GPT with error correction + feedback ---
+        prompt = f"""
+You are a helpful language tutor. The learner is practicing {language}.
+1. Correct their mistakes politely.
+2. Respond in {language}.
+3. If feedback mode is enabled, explain grammar and vocabulary.
+Learner said: "{user_text}"
+Feedback mode: {feedback_mode}
+"""
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "system", "content": prompt}]
+        )
+        assistant_text = response.choices[0].message.content
+        st.write(f"**Assistant ({language}):** {assistant_text}")
 
-# Display chat messages
-for msg in st.session_state.messages:
-    if msg["role"] == "user":
-        st.chat_message("user").markdown(msg["content"])
-    elif msg["role"] == "assistant":
-        st.chat_message("assistant").markdown(msg["content"])
+        # --- Step 3: Convert GPT reply to Speech ---
+        speech_file = Path("output.mp3")
+        with openai.audio.speech.with_streaming_response.create(
+            model="gpt-4o-mini-tts",
+            voice="alloy",
+            input=assistant_text,
+        ) as r:
+            r.stream_to_file(speech_file)
 
-# Chat input
-if user_input := st.chat_input("Type your message here..."):
-    st.session_state.messages.append({"role": "user", "content": user_input})
-    st.chat_message("user").markdown(user_input)
+        st.audio(str(speech_file), format="audio/mp3")
 
-    # Call OpenAI API (new v1.0+ interface)
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=st.session_state.messages
+        # --- Step 4: Log Conversation ---
+        st.session_state.log.append({
+            "Language": language,
+            "User": user_text,
+            "Assistant": assistant_text,
+            "FeedbackMode": feedback_mode
+        })
+
+# --- Progress Tracking: CSV Download ---
+if st.session_state.log:
+    df = pd.DataFrame(st.session_state.log)
+    csv_buffer = io.StringIO()
+    df.to_csv(csv_buffer, index=False)
+    st.download_button(
+        label="📥 Download Conversation Log (CSV)",
+        data=csv_buffer.getvalue(),
+        file_name="language_learning_log.csv",
+        mime="text/csv"
     )
-
-    assistant_msg = response.choices[0].message.content
-    st.session_state.messages.append(
-        {"role": "assistant", "content": assistant_msg})
-    st.chat_message("assistant").markdown(assistant_msg)
