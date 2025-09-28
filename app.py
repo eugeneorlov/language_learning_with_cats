@@ -6,20 +6,17 @@ from pathlib import Path
 import pandas as pd
 import io
 from openai import OpenAI
+from datetime import datetime
 
-# --- Initialize OpenAI client ---
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 st.set_page_config(page_title="Language Bot",
                    page_icon="🐱🎤", layout="centered")
 st.title("🐱🎤 AI Language Learning Assistant")
-st.image("resources/language_learning_with_cats.png", use_container_width=True)
 
-# --- Language Selection ---
+# --- Language and Feedback ---
 language = st.selectbox("Choose your practice language:", [
-                        "German", "French", "Spanish"])
-
-# --- Feedback Mode ---
+                        "German", "English", "French", "Spanish"])
 feedback_mode = st.checkbox(
     "Enable feedback (grammar + vocabulary explanations)", value=True)
 
@@ -27,44 +24,88 @@ feedback_mode = st.checkbox(
 if "log" not in st.session_state:
     st.session_state.log = []
 
-# --- WebRTC Audio Streamer ---
-ctx = webrtc_streamer(
-    key="speech-demo",
-    mode=WebRtcMode.SENDONLY,
-    audio_receiver_size=1024,
-    media_stream_constraints={"audio": True, "video": False},
-    async_processing=True,
-)
+# --- Chat Input ---
+st.subheader("💬 Chat with AI")
+chat_input = st.text_input("Type your message here and press Enter:")
 
-# --- Record & Process Audio on Button Click ---
-if ctx.audio_receiver:
-    if st.button("🎙️ Transcribe & Chat"):
-        wav_path = Path("input.wav")
 
-        # --- Step 1: Collect frames and save proper WAV ---
-        frames = [frame.to_ndarray()
-                  for frame in ctx.audio_receiver.get_frames(timeout=1)]
-        if len(frames) == 0:
-            st.warning("No audio frames captured. Please try again.")
-        else:
+def process_user_input(user_text):
+    """Send user text to GPT, get assistant response, play TTS, log conversation."""
+    prompt_system = f"""
+You are a helpful language tutor. The learner is practicing {language}.
+1. Correct their mistakes politely.
+2. Respond in {language}.
+3. If feedback mode is enabled, explain grammar and vocabulary.
+"""
+    prompt_user = f"Learner said: {user_text}\nFeedback mode: {feedback_mode}"
+
+    chat_response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": prompt_system},
+            {"role": "user", "content": prompt_user}
+        ]
+    )
+    assistant_text = chat_response.choices[0].message.content
+
+    # TTS
+    speech_file = Path("output.mp3")
+    with client.audio.speech.with_streaming_response.create(
+        model="gpt-4o-mini-tts",
+        voice="alloy",
+        input=assistant_text,
+    ) as tts_stream:
+        tts_stream.stream_to_file(speech_file)
+
+    st.audio(str(speech_file), format="audio/mp3")
+
+    # Log
+    st.session_state.log.append({
+        "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "Language": language,
+        "User": user_text,
+        "Assistant": assistant_text,
+        "FeedbackMode": feedback_mode
+    })
+
+    return assistant_text
+
+
+# --- Handle chat input ---
+if chat_input:
+    process_user_input(chat_input)
+
+# --- Voice Interaction ---
+st.subheader("🎤 Voice Conversation")
+col1, col2 = st.columns(2)
+start_button = col1.button("Start Recording")
+stop_button = col2.button("Stop & Send Audio")
+
+if "recording" not in st.session_state:
+    st.session_state.recording = False
+
+if start_button:
+    st.session_state.recording = True
+
+if stop_button:
+    st.session_state.recording = False
+    if "webrtc_ctx" in st.session_state and st.session_state.webrtc_ctx.audio_receiver:
+        frames = [frame.to_ndarray(
+        ) for frame in st.session_state.webrtc_ctx.audio_receiver.get_frames(timeout=1)]
+        if len(frames) > 0:
             audio_data = np.hstack(frames)
-
-            # Transpose if shape is (channels, samples)
             if audio_data.shape[0] < audio_data.shape[1]:
                 audio_data = audio_data.T
-
-            # Convert to float32 [-1,1]
             if audio_data.dtype != np.float32:
                 if np.issubdtype(audio_data.dtype, np.integer):
                     audio_data = audio_data.astype(
                         np.float32) / np.iinfo(audio_data.dtype).max
                 else:
                     audio_data = audio_data.astype(np.float32)
-
-            # Save WAV in PCM_16
+            wav_path = Path("input.wav")
             sf.write(wav_path, audio_data, samplerate=48000, subtype="PCM_16")
 
-            # --- Step 2: Transcribe Speech ---
+            # Transcribe audio
             with open(wav_path, "rb") as f:
                 transcription = client.audio.transcriptions.create(
                     model="gpt-4o-mini-transcribe",
@@ -73,45 +114,27 @@ if ctx.audio_receiver:
             user_text = transcription.text
             st.write(f"**You said:** {user_text}")
 
-            # --- Step 3: Chat with GPT ---
-            prompt_system = f"""
-You are a helpful language tutor. The learner is practicing {language}.
-1. Correct their mistakes politely.
-2. Respond in {language}.
-3. If feedback mode is enabled, explain grammar and vocabulary.
-"""
-            prompt_user = f"Learner said: {user_text}\nFeedback mode: {feedback_mode}"
+            # Process and log
+            process_user_input(user_text)
 
-            chat_response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": prompt_system},
-                    {"role": "user", "content": prompt_user}
-                ]
-            )
-            assistant_text = chat_response.choices[0].message.content
-            st.write(f"**Assistant ({language}):** {assistant_text}")
+# --- WebRTC streamer ---
+if st.session_state.recording:
+    st.session_state.webrtc_ctx = webrtc_streamer(
+        key="voice-demo",
+        mode=WebRtcMode.SENDONLY,
+        audio_receiver_size=1024,
+        media_stream_constraints={"audio": True, "video": False},
+        async_processing=True,
+    )
 
-            # --- Step 4: Convert GPT reply to Speech (TTS) ---
-            speech_file = Path("output.mp3")
-            with client.audio.speech.with_streaming_response.create(
-                model="gpt-4o-mini-tts",
-                voice="alloy",
-                input=assistant_text,
-            ) as tts_stream:
-                tts_stream.stream_to_file(speech_file)
+# --- Display full conversation history ---
+st.subheader("📝 Conversation History")
+for entry in st.session_state.log:
+    st.markdown(
+        f"**[{entry['Timestamp']}] You ({entry['Language']}):** {entry['User']}")
+    st.markdown(f"**Assistant:** {entry['Assistant']}\n---")
 
-            st.audio(str(speech_file), format="audio/mp3")
-
-            # --- Step 5: Log Conversation ---
-            st.session_state.log.append({
-                "Language": language,
-                "User": user_text,
-                "Assistant": assistant_text,
-                "FeedbackMode": feedback_mode
-            })
-
-# --- Downloadable CSV Log ---
+# --- Download CSV ---
 if st.session_state.log:
     df = pd.DataFrame(st.session_state.log)
     csv_buffer = io.StringIO()
