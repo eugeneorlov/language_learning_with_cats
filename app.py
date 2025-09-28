@@ -10,13 +10,12 @@ from datetime import datetime
 
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-st.set_page_config(page_title="Language Bot",
-                   page_icon="🐱🎤", layout="centered")
-st.title("🐱🎤 AI Language Learning Assistant")
+st.set_page_config(page_title="AI Language Learning Assistant")
+st.title("🎤 AI Language Learning Assistant")
 
 # --- Language and Feedback ---
 language = st.selectbox("Choose your practice language:", [
-                        "German", "English", "French", "Spanish"])
+                        "English", "French", "Spanish"])
 feedback_mode = st.checkbox(
     "Enable feedback (grammar + vocabulary explanations)", value=True)
 
@@ -25,8 +24,8 @@ if "log" not in st.session_state:
     st.session_state.log = []
 
 # --- Chat Input ---
-st.subheader("💬 Chat with AI")
-chat_input = st.text_input("Type your message here and press Enter:")
+if "chat_text" not in st.session_state:
+    st.session_state.chat_text = ""
 
 
 def process_user_input(user_text):
@@ -59,7 +58,7 @@ You are a helpful language tutor. The learner is practicing {language}.
 
     st.audio(str(speech_file), format="audio/mp3")
 
-    # Log
+    # Log conversation
     st.session_state.log.append({
         "Timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "Language": language,
@@ -71,9 +70,15 @@ You are a helpful language tutor. The learner is practicing {language}.
     return assistant_text
 
 
-# --- Handle chat input ---
+chat_input = st.text_input(
+    "Type your message here and press Enter:",
+    key="chat_text"
+)
+
 if chat_input:
     process_user_input(chat_input)
+    # Clear chat input after sending
+    st.session_state.chat_text = ""
 
 # --- Voice Interaction ---
 st.subheader("🎤 Voice Conversation")
@@ -130,9 +135,10 @@ if st.session_state.recording:
 # --- Display full conversation history ---
 st.subheader("📝 Conversation History")
 for entry in st.session_state.log:
-    st.markdown(
+    st.write(
         f"**[{entry['Timestamp']}] You ({entry['Language']}):** {entry['User']}")
-    st.markdown(f"**Assistant:** {entry['Assistant']}\n---")
+    st.write(f"**Assistant:** {entry['Assistant']}")
+    st.markdown("---")
 
 # --- Download CSV ---
 if st.session_state.log:
