@@ -2,6 +2,10 @@
 secrets.toml
 .streamlit/
 
+# Audio
+input.wav
+output.mp3
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
