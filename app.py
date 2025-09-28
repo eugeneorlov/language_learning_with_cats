@@ -10,12 +10,14 @@ from datetime import datetime
 
 client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
-st.set_page_config(page_title="AI Language Learning Assistant")
-st.title("🎤 AI Language Learning Assistant")
+st.set_page_config(page_title="Language Bot",
+                   page_icon="🐱🎤", layout="centered")
+st.title("🐱🎤 AI Language Learning Assistant")
+st.image("resources/language_learning_with_cats.png", use_container_width=True)
 
 # --- Language and Feedback ---
 language = st.selectbox("Choose your practice language:", [
-                        "English", "French", "Spanish"])
+                        "German", "English", "French", "Spanish"])
 feedback_mode = st.checkbox(
     "Enable feedback (grammar + vocabulary explanations)", value=True)
 
@@ -69,16 +71,22 @@ You are a helpful language tutor. The learner is practicing {language}.
 
     return assistant_text
 
+# --- Chat input with auto-clear ---
 
-chat_input = st.text_input(
+
+def send_chat():
+    user_text = st.session_state.chat_text
+    if user_text:
+        process_user_input(user_text)
+        st.session_state.chat_text = ""  # clears input safely
+
+
+st.subheader("💬 Chat with AI")
+st.text_input(
     "Type your message here and press Enter:",
-    key="chat_text"
+    key="chat_text",
+    on_change=send_chat
 )
-
-if chat_input:
-    process_user_input(chat_input)
-    # Clear chat input after sending
-    st.session_state.chat_text = ""
 
 # --- Voice Interaction ---
 st.subheader("🎤 Voice Conversation")
